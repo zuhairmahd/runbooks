@@ -50,10 +50,10 @@ try
     if ($relevantSubscriptions.Count -eq 0)
     {
         Write-Host "No subscriptions found - creating new one..." -ForegroundColor Yellow
-        $subscriptionId = $env:AZURE_SUBSCRIPTION_ID ?? "8a89e116-824d-4eeb-8ef4-16dcc1f0959b"
-        $resourceGroup = $env:RESOURCE_GROUP_NAME ?? "groupchangefunction"
-        $partnerTopic = $env:PARTNER_TOPIC_NAME ?? "default"
-        $location = $env:AZURE_REGION ?? "centralus"
+        $subscriptionId = $env:AZURE_SUBSCRIPTION_ID
+        $resourceGroup = "groupchangefunction"
+        $partnerTopic = "default"
+        $location = "centralus"
 
         $newExpiration = (Get-Date).AddMinutes(4230)
         $clientState = [Guid]::NewGuid().ToString()
@@ -92,7 +92,7 @@ try
         $graphSubscriptionId = $sub.Id
         Write-Host "`nProcessing subscription: $graphSubscriptionId"
 
-        $expirationDateTime = [DateTime]::Parse($sub.ExpirationDateTime)
+        $expirationDateTime = [DateTime]$sub.ExpirationDateTime
         $hoursUntilExpiration = ($expirationDateTime - (Get-Date)).TotalHours
 
         Write-Host "  Resource: $($sub.Resource)"
