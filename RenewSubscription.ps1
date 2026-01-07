@@ -16,94 +16,166 @@
 [CmdletBinding()]
 param()
 
-Write-Host "================================================"
-Write-Host "Microsoft Graph Subscription Renewal Function"
-Write-Host "================================================"
-Write-Host "Execution time: $((Get-Date).ToString('o'))"
+Write-Output "================================================"
+Write-Output "Microsoft Graph Subscription Renewal Function"
+Write-Output "================================================"
+Write-Output "Execution time: $((Get-Date).ToString('o'))"
 
-# Get client ID from environment variable or App Configuration
-$managedIdentityClientId = $env:change_group_function_identity_client_id
-$subscriptionRenewalPeriodHours = if ($env:SUBSCRIPTION_RENEWAL_PERIOD_HOURS)
+#region Get automation variables
+$managedIdentityClientId = Get-AutomationVariable -Name 'change_group_function_identity_client_id'
+$subscriptionRenewalPeriodHours = if (Get-AutomationVariable -Name 'SUBSCRIPTION_RENEWAL_PERIOD_HOURS' -ErrorAction SilentlyContinue)
 {
-    [int]$env:SUBSCRIPTION_RENEWAL_PERIOD_HOURS
+    [int](Get-AutomationVariable -Name 'SUBSCRIPTION_RENEWAL_PERIOD_HOURS')
 }
 else
 {
     24
 }
 
-# Try to find subscription by querying all subscriptions for this resource
+$subscriptionId = Get-AutomationVariable -Name 'AZURE_SUBSCRIPTION_ID' -ErrorAction SilentlyContinue
+if (-not $subscriptionId)
+{
+    Write-Output "AZURE_SUBSCRIPTION_ID variable not set."
+    $subscriptionId = $null
+}
+
+$resourceGroup = Get-AutomationVariable -Name 'AZURE_RESOURCE_GROUP' -ErrorAction SilentlyContinue
+if (-not $resourceGroup)
+{
+    $resourceGroup = 'groupchangefunction'
+    Write-Output "AZURE_RESOURCE_GROUP variable not set. Using default: $resourceGroup"
+}
+
+$partnerTopic = Get-AutomationVariable -Name 'EVENT_GRID_PARTNER_TOPIC' -ErrorAction SilentlyContinue
+if (-not $partnerTopic)
+{
+    $partnerTopic = 'default'
+    Write-Output "EVENT_GRID_PARTNER_TOPIC variable not set. Using default: $partnerTopic"
+}
+
+$partnerTopicId = Get-AutomationVariable -Name 'EVENT_GRID_PARTNER_TOPIC_ID' -ErrorAction SilentlyContinue
+if (-not $partnerTopicId)
+{
+    $partnerTopicId = $null
+    Write-Output "EVENT_GRID_PARTNER_TOPIC_ID variable not set. Using default: $partnerTopicId"
+}
+
+$location = Get-AutomationVariable -Name 'AZURE_LOCATION' -ErrorAction SilentlyContinue
+if (-not $location)
+{
+    $location = 'centralus'
+    Write-Host "AZURE_LOCATION variable not set. Using default: $location"
+}
+#endregion Get automation variables
+
 try
 {
     Connect-MgGraph -Identity -ClientId $managedIdentityClientId -NoWelcome
-    Write-Host "Connected to Microsoft Graph"
-
-    $allSubscriptions = Get-MgSubscription -All
-    Write-Host "Got $($allSubscriptions.Count) total subscriptions  "
-
-    # Filter for subscriptions that use EventGrid and match our resource
-    $relevantSubscriptions = $allSubscriptions | Where-Object {
-        $_.NotificationUrl -like "*EventGrid*" -and
-        $_.Resource -eq "groups"
-    }
-    Write-Host "Filtering for subscriptions with resource 'groups' and EventGrid notification URL"
-    if ($relevantSubscriptions.Count -eq 0)
+    Write-Output "Connected to Microsoft Graph"
+    if (-not $partnerTopicId )
     {
-        Write-Host "No subscriptions found - creating new one..." -ForegroundColor Yellow
-        $subscriptionId = $env:AZURE_SUBSCRIPTION_ID
-        $resourceGroup = "groupchangefunction"
-        $partnerTopic = "default"
-        $location = "centralus"
+        # Try to find partner topic subscription by querying all subscriptions for this resource
+        $allPartnerTopicSubscriptions = Get-MgSubscription -All
+        Write-Output "Got response: $($relevantSubscriptions |Out-String)"
 
-        $newExpiration = (Get-Date).AddMinutes(4230)
-        $clientState = [Guid]::NewGuid().ToString()
-
-        $createParams = @{
-            changeType               = "updated,deleted,created"
-            notificationUrl          = "EventGrid:?azuresubscriptionid=$subscriptionId&resourcegroup=$resourceGroup&partnertopic=$partnerTopic&location=$location"
-            lifecycleNotificationUrl = "EventGrid:?azuresubscriptionid=$subscriptionId&resourcegroup=$resourceGroup&partnertopic=$partnerTopic&location=$location"
-            resource                 = "groups"
-            expirationDateTime       = $newExpiration
-            clientState              = $clientState
-        }
-
-        try
+        # Filter for a subscription that uses EventGrid and match our resource
+        Write-Output "Filtering for subscriptions with resource 'groups' and EventGrid notification URL"
+        $relevantSubscriptions = $allPartnerTopic       Subscriptions | Where-Object {
+            $_.NotificationUrl -like "*EventGrid*" -and
+            $_.Resource -eq "groups"
+        } | Select-Object -First 1
+        if ($null -eq $relevantSubscriptions)
         {
-            $newSubscription = New-MgSubscription -BodyParameter $createParams
-            Write-Host "✅ Created new subscription: $($newSubscription.Id)" -ForegroundColor Green
-            Write-Host "   Expires: $($newSubscription.ExpirationDateTime)" -ForegroundColor Green
-            Write-Host "⚠️  IMPORTANT: New subscription ID generated" -ForegroundColor Yellow
-            Write-Host "   To optimize future runs, set GRAPH_SUBSCRIPTION_ID in Function App settings:" -ForegroundColor Yellow
-            Write-Host "   Value: $($newSubscription.Id)" -ForegroundColor White
+            Write-Output "No subscriptions found - creating new one..."
 
-            # Continue processing with this new subscription
-            $relevantSubscriptions = @($newSubscription)
+            # If subscription ID is not configured, try to get it from the current Azure context
+            if ([string]::IsNullOrWhiteSpace($subscriptionId))
+            {
+                Write-Output "Subscription ID not configured in automation variables. Attempting to retrieve from current Azure context..."
+                try
+                {
+                    $context = Get-MgContext
+                    if ($context)
+                    {
+                        $subscriptionId = $context.TenantId
+                        Write-Output "Retrieved Tenant ID from Microsoft Graph context: $subscriptionId"
+                    }
+                }
+                catch
+                {
+                    Write-Warning "Could not retrieve subscription ID from context: $($_.Exception.Message)"
+                }
+            }
+
+            # Validate subscription ID format (must be a valid GUID)
+            if ([string]::IsNullOrWhiteSpace($subscriptionId))
+            {
+                Write-Error "AZURE_SUBSCRIPTION_ID automation variable is not set and could not be auto-detected from context."
+                Write-Error "Please set the AZURE_SUBSCRIPTION_ID variable in your Automation Account or ensure the Azure context is properly established."
+                throw "Missing required subscription ID"
+            }
+
+            $newExpiration = (Get-Date).AddMinutes(4230)
+            $clientState = [Guid]::NewGuid().ToString()
+            Write-Output "Creating subscription with:"
+            Write-Output "  Subscription ID: $subscriptionId"
+            Write-Output "  Resource Group: $resourceGroup"
+            Write-Output "  Partner Topic: $partnerTopic"
+            Write-Output "  Location: $location"
+            $createParams = @{
+                changeType               = "updated,deleted,created"
+                notificationUrl          = "EventGrid:?azuresubscriptionid=$subscriptionId&resourcegroup=$resourceGroup&partnertopic=$partnerTopic&location=$location"
+                lifecycleNotificationUrl = "EventGrid:?azuresubscriptionid=$subscriptionId&resourcegroup=$resourceGroup&partnertopic=$partnerTopic&location=$location"
+                resource                 = "groups"
+                expirationDateTime       = $newExpiration
+                clientState              = $clientState
+            }
+            try
+            {
+                $newSubscription = New-MgSubscription -BodyParameter $createParams
+                Write-Output "Created new subscription: $($newSubscription.Id)"
+                Write-Output "Expires: $($newSubscription.ExpirationDateTime)"
+                Write-Output "IMPORTANT: New subscription ID generated"
+                Write-Output "To optimize future runs, set AZURE_TOPIC_SUBSCRIPTION_ID in Automation Account variables:"
+                Write-Output "Value: $($newSubscription.Id)"
+                # Continue processing with this new subscription
+                $relevantSubscriptions = @($newSubscription)
+            }
+            catch
+            {
+                Write-Error "Failed to create subscription: $($_.Exception.Message)"
+                throw
+            }
         }
-        catch
+        else
         {
-            Write-Error "Failed to create subscription: $($_.Exception.Message)"
-            throw
+            $graphSubscriptionId = $relevantSubscriptions.Id
+            $expirationDateTime = [DateTime]$relevantSubscriptions.ExpirationDateTime
+        }
+    }
+    else
+    {
+        Write-Output "Getting subscription by ID: $partnerTopicId"
+        $sub = Get-MgSubscription -SubscriptionId $partnerTopicId
+        if ($sub)
+        {
+            $graphSubscriptionId = $sub.Id
+            $expirationDateTime = [DateTime]$sub.ExpirationDateTime
+            Write-Output "`nProcessing subscription: $graphSubscriptionId"
         }
     }
 
-    Write-Host "Found $($relevantSubscriptions.Count) relevant subscription(s)"
-    foreach ($sub in $relevantSubscriptions)
+    if ($graphSubscriptionId -and $expirationDateTime)
     {
-        $graphSubscriptionId = $sub.Id
-        Write-Host "`nProcessing subscription: $graphSubscriptionId"
-
-        $expirationDateTime = [DateTime]$sub.ExpirationDateTime
         $hoursUntilExpiration = ($expirationDateTime - (Get-Date)).TotalHours
-
-        Write-Host "  Resource: $($sub.Resource)"
-        Write-Host "  Expiration: $expirationDateTime"
-        Write-Host "  Hours until expiration: $([Math]::Round($hoursUntilExpiration, 2))"
+        Write-Output "  Resource: $($sub.Resource)"
+        Write-Output "  Expiration: $expirationDateTime"
+        Write-Output "  Hours until expiration: $([Math]::Round($hoursUntilExpiration, 2))"
 
         # Renew if expiring within subscription renewal period hours
         if ($hoursUntilExpiration -lt $subscriptionRenewalPeriodHours)
         {
-            Write-Host "  ⚠️  Subscription expires soon! Renewing..." -ForegroundColor Yellow
-            # Set new expiration to maximum (4230 minutes)
+            Write-Output "  ⚠️  Subscription expires soon! Renewing..."            # Set new expiration to maximum (4230 minutes)
             $newExpiration = (Get-Date).AddMinutes(4230)
 
             $updateParams = @{
@@ -113,8 +185,7 @@ try
             try
             {
                 $updated = Update-MgSubscription -SubscriptionId $graphSubscriptionId -BodyParameter $updateParams
-                Write-Host "  ✅ Subscription renewed successfully!" -ForegroundColor Green
-                Write-Host "  New expiration: $($updated.ExpirationDateTime)" -ForegroundColor Green
+                Write-Output "  ✅ Subscription renewed successfully!" Write-Output "  New expiration: $($updated.ExpirationDateTime)"
             }
             catch
             {
@@ -131,7 +202,7 @@ try
         }
         else
         {
-            Write-Host "  ✅ Subscription is still valid (expires in $([Math]::Round($hoursUntilExpiration, 1)) hours)" -ForegroundColor Green
+            Write-Output "  ✅ Subscription is still valid (expires in $([Math]::Round($hoursUntilExpiration, 1)) hours)"
         }
     }
 }
@@ -140,11 +211,11 @@ catch
     Write-Error "Failed to connect to Microsoft Graph or query subscriptions: $($_.Exception.Message)"
     throw
 }
-
-Write-Host "`n================================================"
-Write-Host "Renewal check completed at $((Get-Date).ToString('o'))"
-Write-Host "================================================"
-
-
-Disconnect-MgGraph
-Write-Host "`nDisconnected from Microsoft Graph"
+finally
+{
+    Write-Output "`n================================================"
+    Write-Output "Renewal check completed at $((Get-Date).ToString('o'))"
+    Write-Output "================================================"
+    Disconnect-MgGraph
+    Write-Output "`nDisconnected from Microsoft Graph"
+}
