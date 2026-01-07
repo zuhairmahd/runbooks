@@ -80,7 +80,7 @@ try
 
         # Filter for a subscription that uses EventGrid and match our resource
         Write-Output "Filtering for subscriptions with resource 'groups' and EventGrid notification URL"
-        $relevantSubscriptions = $allPartnerTopic       Subscriptions | Where-Object {
+        $relevantSubscriptions = $allPartnerTopicSubscriptions | Where-Object {
             $_.NotificationUrl -like "*EventGrid*" -and
             $_.Resource -eq "groups"
         } | Select-Object -First 1
