@@ -1,17 +1,35 @@
 <#
 .SYNOPSIS
-    Azure Function to automatically renew Microsoft Graph change notification subscriptions.
+    Renews Microsoft Graph subscriptions for group change notifications via Azure Event Grid.
 
 .DESCRIPTION
-    This timer-triggered function runs every 12 hours to check and renew Graph API subscriptions
-    before they expire. It reads subscription information from Azure App Configuration or
-    environment variables and renews subscriptions that are close to expiring.
+    This runbook manages the lifecycle of Microsoft Graph subscriptions that monitor changes to groups.
+    It automatically renews subscriptions that are approaching expiration by creating new ones if needed
+    or updating existing subscriptions. The script relies on automation variables for configuration
+    and connects to Microsoft Graph using a managed identity.
 
 .NOTES
-    - Runs on a timer trigger (every 12 hours by default)
-    - Renews subscriptions that expire within 24 hours
-    - Requires Microsoft.Graph.ChangeNotifications module
-    - Requires appropriate Graph API permissions
+    - Requires: Microsoft Graph PowerShell module and managed identity authentication
+    - Automation Variables Required:
+      * change_group_function_identity_client_id (required): Managed identity client ID
+      * SUBSCRIPTION_RENEWAL_PERIOD_HOURS (optional): Hours before expiration to trigger renewal (default: 24)
+      * AZURE_SUBSCRIPTION_ID (optional): Azure subscription ID for Event Grid
+      * AZURE_RESOURCE_GROUP (optional): Resource group name (default: groupchangefunction)
+      * EVENT_GRID_PARTNER_TOPIC (optional): Partner topic name (default: default)
+      * EVENT_GRID_PARTNER_TOPIC_ID (optional): Subscription ID for direct lookup
+      * AZURE_LOCATION (optional): Azure region (default: centralus)
+
+.EXAMPLE
+    # Run the runbook (no parameters needed - uses automation variables)
+    .\RenewSubscription.ps1
+
+.FUNCTIONALITY
+    - Connects to Microsoft Graph using managed identity
+    - Queries existing subscriptions for group change events
+    - Creates new subscription if none exists
+    - Renews subscriptions within the renewal period
+    - Handles subscription expiration and error scenarios
+    - Provides detailed output for monitoring and troubleshooting
 #>
 [CmdletBinding()]
 param()
