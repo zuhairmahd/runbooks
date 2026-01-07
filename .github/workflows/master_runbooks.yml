@@ -1,0 +1,95 @@
+# Docs for the Azure Web Apps Deploy action: https://github.com/azure/functions-action
+# More GitHub Actions for Azure: https://github.com/Azure/actions
+
+name: Test powershell runbook
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  checks: write
+  pull-requests: write
+
+jobs:
+  test-unit:
+    name: Unit Tests (pwsh on Windows)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify PowerShell 7
+        shell: pwsh
+        run: |
+          Write-Host "Using PowerShell version: $($PSVersionTable.PSVersion)"
+          if ($PSVersionTable.PSVersion.Major -lt 7) { Write-Error "PowerShell 7+ is required."; exit 1 }
+
+      - name: Cache Pester module
+        uses: actions/cache@v4
+        with:
+          path: ~\Documents\PowerShell\Modules\Pester
+          key: ${{ runner.os }}-pester-${{ hashFiles('**/Invoke-PesterTests.ps1') }}
+          restore-keys: |
+            ${{ runner.os }}-pester-
+
+      - name: cache PSScriptAnalyzer
+        uses: actions/cache@v4
+        with:
+          path: ~\Documents\PowerShell\Modules\PSScriptAnalyzer
+          key: ${{ runner.os }}-psscriptanalyzer-${{ hashFiles('**/Invoke-PesterTests.ps1') }}
+          restore-keys: |
+            ${{ runner.os }}-psscriptanalyzer-
+
+      - name: Install Pester
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name Pester -MinimumVersion 5.0.0 -Scope CurrentUser -Force -SkipPublisherCheck
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name PSScriptAnalyzer -MinimumVersion 1.18.0 -Scope CurrentUser -Force -SkipPublisherCheck
+
+      - name: Run Unit Tests
+        shell: pwsh
+        run: |
+          .\Invoke-PesterTests.ps1 -TestType Unit -CI -OutputVerbosity Detailed
+
+      - name: Upload unit test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: |
+            TestResults*.xml
+            coverage.xml
+          retention-days: 30
+
+  summary:
+    name: Test Summary
+    runs-on: windows-latest
+    needs: [test-unit]
+    if: always()
+    steps:
+      - name: Check test results
+        shell: pwsh
+        run: |
+          $unitResult = '${{ needs.test-unit.result }}'
+
+          Write-Host "Test Results Summary:" -ForegroundColor Cyan
+          Write-Host "  Unit Tests: $unitResult" -ForegroundColor $(if ($unitResult -eq 'success') { 'Green' } else { 'Red' })
+
+          if ($unitResult -ne 'success') {
+            Write-Error "One or more checks failed. Please review the results above."
+            exit 1
+          }
+          else {
+            Write-Host "`nAll checks passed! ✓" -ForegroundColor Green
+          }
