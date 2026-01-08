@@ -1,17 +1,24 @@
 <#
 .SYNOPSIS
-    Renews Microsoft Graph subscriptions for group change notifications via Azure Event Grid.
+    Renews Microsoft Graph group-change subscriptions that deliver notifications through Azure Event Grid.
 
 .DESCRIPTION
-    This runbook manages the lifecycle of Microsoft Graph subscriptions that monitor changes to groups.
-    It automatically renews subscriptions that are approaching expiration by creating new ones if needed
-    or updating existing subscriptions. The script relies on automation variables for configuration
-    and connects to Microsoft Graph using a managed identity.
+    Ensures the Graph subscription that posts group change notifications to Event Grid stays active. The
+    runbook connects to Microsoft Graph with a managed identity, locates the current subscription (by ID or
+    discovery), and renews it when the expiration window is within the configured threshold. If no matching
+    subscription exists, it creates a new one with the Event Grid endpoint parameters derived from automation
+    variables or environment variables.
+
+.PARAMETER WhatIf
+    Shows the actions that would be taken (create or renew) without performing them.
+
+.PARAMETER Disconnect
+    Disconnects the Microsoft Graph session at the end of the run. Automatically enabled in Azure Automation.
 
 .NOTES
     - Requires: Microsoft Graph PowerShell module and managed identity authentication
-    - Automation Variables Required:
-      * change_group_function_identity_client_id (required): Managed identity client ID
+    - Automation / environment variables:
+      * change_group_function_identity_client_id (required in Azure Automation): Managed identity client ID
       * SUBSCRIPTION_RENEWAL_PERIOD_HOURS (optional): Hours before expiration to trigger renewal (default: 24)
       * AZURE_SUBSCRIPTION_ID (optional): Azure subscription ID for Event Grid
       * AZURE_RESOURCE_GROUP (optional): Resource group name (default: groupchangefunction)
@@ -20,15 +27,18 @@
       * AZURE_LOCATION (optional): Azure region (default: centralus)
 
 .EXAMPLE
-    # Run the runbook (no parameters needed - uses automation variables)
-    .\RenewSubscription.ps1
+    .\RenewSubscription.ps1 -Verbose
+    Runs locally, uses environment variables, and prints verbose discovery/renewal details.
+
+.EXAMPLE
+    .\RenewSubscription.ps1 -WhatIf
+    Shows what renewal or creation would occur without changing the Graph subscription.
 
 .FUNCTIONALITY
     - Connects to Microsoft Graph using managed identity
-    - Queries existing subscriptions for group change events
-    - Creates new subscription if none exists
-    - Renews subscriptions within the renewal period
-    - Handles subscription expiration and error scenarios
+    - Discovers an existing group-change subscription or creates one when missing
+    - Renews subscriptions that are within the configured expiration window
+    - Emits clear guidance when the subscription belongs to a different app or is expired
     - Provides detailed output for monitoring and troubleshooting
 #>
 [CmdletBinding()]
