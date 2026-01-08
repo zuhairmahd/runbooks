@@ -42,10 +42,7 @@
     - Provides detailed output for monitoring and troubleshooting
 #>
 [CmdletBinding()]
-param(
-    [switch]$WhatIf,
-    [switch]$Disconnect
-)
+param()
 
 #region Helper functions
 function Test-IsAzureAutomation()
@@ -186,6 +183,8 @@ $resourceGroup = Get-VariableValue -VariableName 'AZURE_RESOURCE_GROUP' -Default
 $partnerTopic = Get-VariableValue -VariableName 'EVENT_GRID_PARTNER_TOPIC' -DefaultValue 'default' -IsAzureAutomation $isAzureAutomation
 $partnerTopicId = Get-VariableValue -VariableName 'EVENT_GRID_PARTNER_TOPIC_ID' -IsAzureAutomation $isAzureAutomation
 $location = Get-VariableValue -VariableName 'AZURE_LOCATION' -DefaultValue 'centralus' -IsAzureAutomation $isAzureAutomation
+$WhatIf = $false
+$Disconnect = $false
 #validate the variables for good measure
 if (-not $subscriptionId)
 {
