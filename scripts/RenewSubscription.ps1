@@ -350,3 +350,4 @@ finally
         Write-Output "`nDisconnected from Microsoft Graph"
     }
 }
+
