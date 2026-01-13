@@ -183,6 +183,8 @@ $resourceGroup = Get-VariableValue -VariableName 'AZURE_RESOURCE_GROUP' -Default
 $partnerTopic = Get-VariableValue -VariableName 'EVENT_GRID_PARTNER_TOPIC' -DefaultValue 'default' -IsAzureAutomation $isAzureAutomation
 $partnerTopicId = Get-VariableValue -VariableName 'EVENT_GRID_PARTNER_TOPIC_ID' -IsAzureAutomation $isAzureAutomation
 $location = Get-VariableValue -VariableName 'AZURE_LOCATION' -DefaultValue 'centralus' -IsAzureAutomation $isAzureAutomation
+$subscriptionNotificationUrl = Get-VariableValue -VariableName 'SUBSCRIPTION_NOTIFICATION_URL' -IsAzureAutomation $isAzureAutomation -DefaultValue 'EventGrid'
+$recreatePartnerTopic = Get-VariableValue -VariableName 'RECREATE_PARTNER_TOPIC' -DefaultValue $false -IsAzureAutomation $isAzureAutomation
 $WhatIf = $false
 $Disconnect = $false
 #validate the variables for good measure
@@ -215,7 +217,6 @@ try
     {
         throw "Failed to connect to Microsoft Graph"
     }
-
     if (-not $partnerTopicId )
     {
         # Try to find partner topic subscription by querying all subscriptions for this resource
@@ -224,58 +225,102 @@ try
 
         # Filter for a subscription that uses EventGrid and match our resource
         Write-Output "Filtering for subscriptions with resource 'groups' and EventGrid notification URL"
-        $relevantSubscriptions = $allPartnerTopicSubscriptions | Where-Object {
-            $_.NotificationUrl -like "*EventGrid*" -and
-            $_.Resource -eq "groups"
-        } | Select-Object -First 1
-        if ($null -eq $relevantSubscriptions)
+        $exactSubscriptionFound = $allPartnerTopicSubscriptions | Where-Object { $_.NotificationUrl -eq $subscriptionNotificationUrl -and $_.Resource -eq "groups" }
+        if ($exactsubscriptionFound)
         {
-            Write-Output "No subscriptions found - creating new one..."
-
-            # If subscription ID is not configured, try to get it from the current Azure context
-
-            $newExpiration = (Get-Date).AddMinutes(4230)
-            $clientState = [Guid]::NewGuid().ToString()
-            Write-Output "Creating subscription with:"
-            Write-Output "  Subscription ID: $subscriptionId"
-            Write-Output "  Resource Group: $resourceGroup"
-            Write-Output "  Partner Topic: $partnerTopic"
-            Write-Output "  Location: $location"
-            if ($whatIf)
-            {
-                Write-Output "  WHATIF: New subscription would be created with expiration $newExpiration"
-            }
-            else
-            {
-                $createParams = @{
-                    changeType               = "updated,deleted,created"
-                    notificationUrl          = "EventGrid:?azuresubscriptionid=$subscriptionId&resourcegroup=$resourceGroup&partnertopic=$partnerTopic&location=$location"
-                    lifecycleNotificationUrl = "EventGrid:?azuresubscriptionid=$subscriptionId&resourcegroup=$resourceGroup&partnertopic=$partnerTopic&location=$location"
-                    resource                 = "groups"
-                    expirationDateTime       = $newExpiration
-                    clientState              = $clientState
-                }
-                try
-                {
-                    $newSubscription = New-MgSubscription -BodyParameter $createParams
-                    Write-Output "Created new subscription: $($newSubscription.Id)"
-                    Write-Output "Expires: $($newSubscription.ExpirationDateTime)"
-                    Write-Output "IMPORTANT: New subscription ID generated"
-                    Write-Output "To optimize future runs, set AZURE_TOPIC_SUBSCRIPTION_ID in Automation Account variables:"
-                    Write-Output "Value: $($newSubscription.Id)"
-                    # Continue processing with this new subscription
-                    $relevantSubscriptions = @($newSubscription)
-                }
-                catch
-                {
-                    Write-Error "Failed to create subscription: $($_.Exception.Message)"
-                    throw
-                }
-            }
+            Write-Output "Exact matching subscription found with NotificationUrl '$subscriptionNotificationUrl'. Using this subscription."
+            $graphSubscriptionObject = $exactSubscriptionFound | Select-Object -First 1
         }
         else
         {
-            $graphSubscriptionObject = $relevantSubscriptions
+            Write-Output "No exact matching subscription found. Searching for partial match with NotificationUrl containing '$subscriptionNotificationUrl'."
+            $relevantSubscriptions = $allPartnerTopicSubscriptions | Where-Object {
+                $_.NotificationUrl -like "`*$subscriptionNotificationUrl`*" -and
+                $_.Resource -eq "groups"
+            } | Select-Object -First 1
+            if ($null -eq $relevantSubscriptions)
+            {
+                Write-Output "No subscriptions found - creating new one..."
+
+                $newExpiration = (Get-Date).AddMinutes(4230)
+                $clientState = [Guid]::NewGuid().ToString()
+                Write-Output "Creating subscription with:"
+                Write-Output "  Subscription ID: $subscriptionId"
+                Write-Output "  Resource Group: $resourceGroup"
+                Write-Output "  Partner Topic: $partnerTopic"
+                Write-Output "  Location: $location"
+                if ($whatIf)
+                {
+                    Write-Output "  WHATIF: New subscription would be created with expiration $newExpiration"
+                }
+                else
+                {
+                    $createParams = @{
+                        changeType               = "updated,deleted,created"
+                        notificationUrl          = "EventGrid:?azuresubscriptionid=$subscriptionId&resourcegroup=$resourceGroup&partnertopic=$partnerTopic&location=$location"
+                        lifecycleNotificationUrl = "EventGrid:?azuresubscriptionid=$subscriptionId&resourcegroup=$resourceGroup&partnertopic=$partnerTopic&location=$location"
+                        resource                 = "groups"
+                        expirationDateTime       = $newExpiration
+                        clientState              = $clientState
+                    }
+                    try
+                    {
+                        $newSubscription = New-MgSubscription -BodyParameter $createParams
+                        Write-Output "Created new subscription: $($newSubscription.Id)"
+                        Write-Output "Expires: $($newSubscription.ExpirationDateTime)"
+                        Write-Output "IMPORTANT: New subscription ID generated"
+                        Write-Output "To optimize future runs, set AZURE_TOPIC_SUBSCRIPTION_ID in Automation Account variables:"
+                        Write-Output "Value: $($newSubscription.Id)"
+                        # Continue processing with this new subscription
+                        $relevantSubscriptions = @($newSubscription)
+                    }
+                    catch
+                    {
+                        Write-Error "Failed to create subscription: $($_.Exception.Message)"
+                        throw
+                    }
+
+                }
+            }
+            else
+            {
+                $graphSubscriptionObject = $relevantSubscriptions
+                if ($recreatePartnerTopic)
+                {
+                    Remove-MgSubscription -SubscriptionId $graphSubscriptionObject.Id -ErrorAction SilentlyContinue
+                    Write-Output "Recreating subscription as RECREATE_PARTNER_TOPIC is set to true."
+                    $newExpiration = (Get-Date).AddMinutes(4230)
+                    $clientState = [Guid]::NewGuid().ToString()
+                    if ($whatIf)
+                    {
+                        Write-Output "  WHATIF: Subscription would be recreated with expiration $newExpiration"
+                    }
+                    else
+                    {
+                        $createParams = @{
+                            changeType               = "updated,deleted,created"
+                            notificationUrl          = "EventGrid:?azuresubscriptionid=$subscriptionId&resourcegroup=$resourceGroup&partnertopic=$partnerTopic&location=$location"
+                            lifecycleNotificationUrl = "EventGrid:?azuresubscriptionid=$subscriptionId&resourcegroup=$resourceGroup&partnertopic=$partnerTopic&location=$location"
+                            resource                 = "groups"
+                            expirationDateTime       = $newExpiration
+                            clientState              = $clientState
+                        }
+                        try
+                        {
+                            $newSubscription = New-MgSubscription -BodyParameter $createParams
+                            Write-Output "Created new subscription: $($newSubscription.Id)"
+                            Write-Output "Expires: $($newSubscription.ExpirationDateTime)"
+                            # Continue processing with this new subscription
+                            $graphSubscriptionObject = $newSubscription
+                        }
+                        catch
+                        {
+                            Write-Error "Failed to create subscription: $($_.Exception.Message)"
+                            throw
+                        }
+                    }
+                }
+            }
         }
     }
     else
@@ -333,6 +378,7 @@ try
         }
     }
 }
+
 catch
 {
     Write-Error "Failed to connect to Microsoft Graph or query subscriptions: $($_.Exception.Message)"
